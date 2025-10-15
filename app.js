@@ -16,8 +16,9 @@
     destroyMain: document.getElementById('destroy-main'),
     destroySub: document.getElementById('destroy-sub'),
     detailsBox: document.getElementById('details-box'),
-    bindFile: document.getElementById('bind-file'),
-    bindStatus: document.getElementById('bind-status'),
+    ghToken: document.getElementById('gh-token'),
+    bindGh: document.getElementById('bind-gh'),
+    ghStatus: document.getElementById('gh-status'),
   };
 
   const store = {
@@ -30,88 +31,104 @@
     sub: 'timeline_sub',
   };
 
-  // IndexedDB：保存文件句柄，跨刷新记住绑定
-  const idb = {
-    db: null,
-    async open() {
-      return new Promise((resolve, reject) => {
-        const req = indexedDB.open('ctdp_db', 1);
-        req.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains('handles')) {
-            db.createObjectStore('handles');
-          }
-        };
-        req.onsuccess = () => { idb.db = req.result; resolve(idb.db); };
-        req.onerror = () => reject(req.error);
-      });
-    },
-    async get(key) {
-      if (!idb.db) await idb.open();
-      return new Promise((resolve, reject) => {
-        const tx = idb.db.transaction('handles', 'readonly');
-        const st = tx.objectStore('handles');
-        const rq = st.get(key);
-        rq.onsuccess = () => resolve(rq.result);
-        rq.onerror = () => reject(rq.error);
-      });
-    },
-    async set(key, val) {
-      if (!idb.db) await idb.open();
-      return new Promise((resolve, reject) => {
-        const tx = idb.db.transaction('handles', 'readwrite');
-        const st = tx.objectStore('handles');
-        const rq = st.put(val, key);
-        rq.onsuccess = () => resolve(true);
-        rq.onerror = () => reject(rq.error);
-      });
-    },
-    async del(key) {
-      if (!idb.db) await idb.open();
-      return new Promise((resolve, reject) => {
-        const tx = idb.db.transaction('handles', 'readwrite');
-        const st = tx.objectStore('handles');
-        const rq = st.delete(key);
-        rq.onsuccess = () => resolve(true);
-        rq.onerror = () => reject(rq.error);
-      });
-    }
+  // 已移除本地文件绑定逻辑
+
+  // GitHub 仓库同步设置（直接写入仓库中的 data.json）
+  const GH_KEYS = {
+    token: 'gh_token',
+    owner: 'gh_owner',
+    repo: 'gh_repo',
+    branch: 'gh_branch',
+    enabled: 'gh_enabled',
   };
+  const gh = {
+    owner: localStorage.getItem(GH_KEYS.owner) || 'Lancy233',
+    repo: localStorage.getItem(GH_KEYS.repo) || 'CTDP',
+    branch: localStorage.getItem(GH_KEYS.branch) || 'main',
+    token: localStorage.getItem(GH_KEYS.token) || '',
+    enabled: localStorage.getItem(GH_KEYS.enabled) === '1',
+  };
+  if (gh.token && ui.ghToken) ui.ghToken.value = gh.token;
+  if (ui.ghStatus) ui.ghStatus.textContent = gh.enabled ? '已绑定' : '未绑定';
 
-  let fileHandle = null; // 绑定的数据文件句柄
-  async function ensurePermission(handle, mode = 'readwrite') {
-    try {
-      if (!handle) return false;
-      const q = await handle.queryPermission ? await handle.queryPermission({ mode }) : 'prompt';
-      if (q === 'granted') return true;
-      const r = await handle.requestPermission ? await handle.requestPermission({ mode }) : 'granted';
-      return r === 'granted';
-    } catch (_) { return false; }
+  async function ghGetFileSha(path) {
+    const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}?ref=${gh.branch}`;
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${gh.token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (res.status === 200) {
+      const data = await res.json();
+      return data.sha;
+    }
+    if (res.status === 404) return null;
+    throw new Error(`GitHub API error: ${res.status}`);
   }
 
-  async function writeFile() {
+  function toBase64Unicode(str) {
+    const utf8 = new TextEncoder().encode(str);
+    let bin = '';
+    utf8.forEach((b) => (bin += String.fromCharCode(b)));
+    return btoa(bin);
+  }
+
+  async function ghPutFile(path, contentStr, sha, message) {
+    const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}`;
+    const body = {
+      message,
+      content: toBase64Unicode(contentStr),
+      branch: gh.branch,
+    };
+    if (sha) body.sha = sha;
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${gh.token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`GitHub PUT error: ${res.status}`);
+    const out = await res.json();
+    return out.content.sha;
+  }
+
+  async function ghEnsureAndSync() {
+    if (!gh.enabled || !gh.token) return;
     try {
-      if (!fileHandle) return;
-      const ok = await ensurePermission(fileHandle, 'readwrite');
-      if (!ok) { ui.bindStatus && (ui.bindStatus.textContent = '未授权写入'); return; }
-      const writable = await fileHandle.createWritable();
-      const data = JSON.stringify({ main: store.main, sub: store.sub }, null, 2);
-      await writable.write(data);
-      await writable.close();
-      ui.bindStatus && (ui.bindStatus.textContent = '已写入数据文件');
+      const path = 'data.json';
+      const contentStr = JSON.stringify({ main: store.main, sub: store.sub }, null, 2);
+      const sha = await ghGetFileSha(path);
+      await ghPutFile(path, contentStr, sha, sha ? 'Update data.json via CTDP' : 'Create data.json via CTDP');
+      ui.ghStatus && (ui.ghStatus.textContent = '已同步');
     } catch (e) {
-      console.error('写入失败', e);
-      ui.bindStatus && (ui.bindStatus.textContent = '写入失败');
+      console.warn(e);
+      ui.ghStatus && (ui.ghStatus.textContent = '同步失败');
     }
   }
 
-  async function readFile() {
+  async function ghReadFile(path) {
+    if (!gh.enabled || !gh.token) return false;
     try {
-      if (!fileHandle) return false;
-      const ok = await ensurePermission(fileHandle, 'read');
-      if (!ok) return false;
-      const file = await fileHandle.getFile();
-      const text = await file.text();
+      const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}?ref=${gh.branch}`;
+      const res = await fetch(url, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${gh.token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      if (res.status !== 200) return false;
+      const data = await res.json();
+      const raw = (data && data.content) ? data.content.replace(/\n/g, '') : '';
+      if (!raw) return false;
+      const bin = atob(raw);
+      const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
       const obj = JSON.parse(text);
       if (obj && Array.isArray(obj.main) && Array.isArray(obj.sub)) {
         store.main = obj.main;
@@ -119,8 +136,12 @@
         return true;
       }
       return false;
-    } catch (e) { console.warn('读取失败', e); return false; }
+    } catch (e) {
+      console.warn('读取仓库 data.json 失败', e);
+      return false;
+    }
   }
+  // 已移除本地文件读写方法
 
   const showToast = (msg) => {
     ui.toast.textContent = msg;
@@ -162,8 +183,9 @@
   const save = () => {
     localStorage.setItem(LS_KEYS.main, JSON.stringify(store.main));
     localStorage.setItem(LS_KEYS.sub, JSON.stringify(store.sub));
-    // 同步到绑定的数据文件（若已绑定）
-    writeFile();
+    // 仅同步到 GitHub 仓库中的 data.json（若已绑定）
+    // 同步到 GitHub 仓库中的 data.json（若已绑定）
+    ghEnsureAndSync();
   };
 
   const renderList = (el, list, lane) => {
@@ -362,28 +384,22 @@
   // 事件绑定
   ui.addNode.addEventListener('click', addNode);
 
-  // 绑定数据文件按钮
-  ui.bindFile && ui.bindFile.addEventListener('click', async () => {
-    try {
-      const pickerOpts = {
-        types: [{ description: 'JSON 文件', accept: { 'application/json': ['.json'] } }],
-        excludeAcceptAllOption: false,
-        multiple: false,
-      };
-      const handles = await window.showOpenFilePicker(pickerOpts);
-      if (!handles || !handles.length) { showToast('未选择文件'); return; }
-      fileHandle = handles[0];
-      await idb.set('dataFile', fileHandle);
-      ui.bindStatus && (ui.bindStatus.textContent = '已绑定');
-      // 绑定后先尝试读入文件数据；若文件为空/不合法，则写入当前内存数据
-      const ok = await readFile();
-      if (!ok) await writeFile();
-      render();
-      showToast('数据文件已绑定');
-    } catch (e) {
-      console.warn('绑定取消或失败', e);
-      showToast('绑定已取消');
-    }
+  // 已移除本地文件绑定入口
+
+  // 绑定仓库同步按钮
+  ui.bindGh && ui.bindGh.addEventListener('click', async () => {
+    const token = (ui.ghToken && ui.ghToken.value.trim()) || '';
+    if (!token) { alert('请输入 GitHub Token'); return; }
+    gh.token = token;
+    gh.enabled = true;
+    localStorage.setItem(GH_KEYS.token, gh.token);
+    localStorage.setItem(GH_KEYS.owner, gh.owner);
+    localStorage.setItem(GH_KEYS.repo, gh.repo);
+    localStorage.setItem(GH_KEYS.branch, gh.branch);
+    localStorage.setItem(GH_KEYS.enabled, '1');
+    ui.ghStatus && (ui.ghStatus.textContent = '已绑定');
+    await ghEnsureAndSync();
+    alert('仓库同步已开启并已尝试写入 data.json');
   });
 
   // 毁链操作（密码 0218）
@@ -408,16 +424,15 @@
   ui.destroyMain && ui.destroyMain.addEventListener('click', () => destroyChain('main'));
   ui.destroySub && ui.destroySub.addEventListener('click', () => destroyChain('sub'));
 
-  // 初始化（尝试恢复文件句柄并读取文件，否则走 localStorage）
+  // 初始化（优先从仓库 data.json 恢复，否则走 localStorage）
   (async () => {
-    await idb.open();
-    try { fileHandle = await idb.get('dataFile'); } catch (_) { fileHandle = null; }
-    let loadedFromFile = false;
-    if (fileHandle) {
-      ui.bindStatus && (ui.bindStatus.textContent = '已绑定');
-      loadedFromFile = await readFile();
+    let loaded = false;
+    if (gh.enabled && gh.token) {
+      ui.ghStatus && (ui.ghStatus.textContent = '已绑定');
+      loaded = await ghReadFile('data.json');
+      if (loaded) ui.ghStatus && (ui.ghStatus.textContent = '已读取');
     }
-    if (!loadedFromFile) load();
+    if (!loaded) load();
     setDefaultDateTime();
     render();
   })();

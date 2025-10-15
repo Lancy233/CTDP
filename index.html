@@ -78,10 +78,13 @@
       </section>
 
       <section class="storage-ops">
-        <h3>数据存储（绑定本地文件）</h3>
-        <div class="actions">
-          <button type="button" class="btn" id="bind-file">绑定数据文件</button>
-          <span class="hint" id="bind-status">未绑定</span>
+        <h3>数据存储（绑定仓库同步）</h3>
+        <div class="actions" style="margin-top:10px">
+          <label class="opt">
+            <input type="password" id="gh-token" placeholder="GitHub Token" />
+          </label>
+          <button type="button" class="btn" id="bind-gh">绑定仓库同步</button>
+          <span class="hint" id="gh-status">未绑定</span>
         </div>
       </section>
 
