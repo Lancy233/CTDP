@@ -16,6 +16,8 @@
     destroyMain: document.getElementById('destroy-main'),
     destroySub: document.getElementById('destroy-sub'),
     detailsBox: document.getElementById('details-box'),
+    bindFile: document.getElementById('bind-file'),
+    bindStatus: document.getElementById('bind-status'),
   };
 
   const store = {
@@ -27,6 +29,98 @@
     main: 'timeline_main',
     sub: 'timeline_sub',
   };
+
+  // IndexedDB：保存文件句柄，跨刷新记住绑定
+  const idb = {
+    db: null,
+    async open() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('ctdp_db', 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('handles')) {
+            db.createObjectStore('handles');
+          }
+        };
+        req.onsuccess = () => { idb.db = req.result; resolve(idb.db); };
+        req.onerror = () => reject(req.error);
+      });
+    },
+    async get(key) {
+      if (!idb.db) await idb.open();
+      return new Promise((resolve, reject) => {
+        const tx = idb.db.transaction('handles', 'readonly');
+        const st = tx.objectStore('handles');
+        const rq = st.get(key);
+        rq.onsuccess = () => resolve(rq.result);
+        rq.onerror = () => reject(rq.error);
+      });
+    },
+    async set(key, val) {
+      if (!idb.db) await idb.open();
+      return new Promise((resolve, reject) => {
+        const tx = idb.db.transaction('handles', 'readwrite');
+        const st = tx.objectStore('handles');
+        const rq = st.put(val, key);
+        rq.onsuccess = () => resolve(true);
+        rq.onerror = () => reject(rq.error);
+      });
+    },
+    async del(key) {
+      if (!idb.db) await idb.open();
+      return new Promise((resolve, reject) => {
+        const tx = idb.db.transaction('handles', 'readwrite');
+        const st = tx.objectStore('handles');
+        const rq = st.delete(key);
+        rq.onsuccess = () => resolve(true);
+        rq.onerror = () => reject(rq.error);
+      });
+    }
+  };
+
+  let fileHandle = null; // 绑定的数据文件句柄
+  async function ensurePermission(handle, mode = 'readwrite') {
+    try {
+      if (!handle) return false;
+      const q = await handle.queryPermission ? await handle.queryPermission({ mode }) : 'prompt';
+      if (q === 'granted') return true;
+      const r = await handle.requestPermission ? await handle.requestPermission({ mode }) : 'granted';
+      return r === 'granted';
+    } catch (_) { return false; }
+  }
+
+  async function writeFile() {
+    try {
+      if (!fileHandle) return;
+      const ok = await ensurePermission(fileHandle, 'readwrite');
+      if (!ok) { ui.bindStatus && (ui.bindStatus.textContent = '未授权写入'); return; }
+      const writable = await fileHandle.createWritable();
+      const data = JSON.stringify({ main: store.main, sub: store.sub }, null, 2);
+      await writable.write(data);
+      await writable.close();
+      ui.bindStatus && (ui.bindStatus.textContent = '已写入数据文件');
+    } catch (e) {
+      console.error('写入失败', e);
+      ui.bindStatus && (ui.bindStatus.textContent = '写入失败');
+    }
+  }
+
+  async function readFile() {
+    try {
+      if (!fileHandle) return false;
+      const ok = await ensurePermission(fileHandle, 'read');
+      if (!ok) return false;
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      if (obj && Array.isArray(obj.main) && Array.isArray(obj.sub)) {
+        store.main = obj.main;
+        store.sub = obj.sub;
+        return true;
+      }
+      return false;
+    } catch (e) { console.warn('读取失败', e); return false; }
+  }
 
   const showToast = (msg) => {
     ui.toast.textContent = msg;
@@ -55,27 +149,21 @@
 
   const load = () => {
     try {
-      store.main = JSON.parse(localStorage.getItem(LS_KEYS.main) || '[]');
-      store.sub = JSON.parse(localStorage.getItem(LS_KEYS.sub) || '[]');
+      const m = localStorage.getItem(LS_KEYS.main);
+      const s = localStorage.getItem(LS_KEYS.sub);
+      store.main = m ? JSON.parse(m) : [];
+      store.sub = s ? JSON.parse(s) : [];
     } catch (_) {
       store.main = []; store.sub = [];
     }
-    // 首次使用提供示例数据，便于预览效果
-    if (!store.main.length && !store.sub.length) {
-      const now = new Date();
-      store.main = [
-        { id: genId(), content: '项目立项', dt: new Date(now.getTime() - 3*24*3600*1000).toISOString(), duration: 120 },
-        { id: genId(), content: '需求评审', dt: new Date(now.getTime() - 2*24*3600*1000).toISOString(), duration: 60 },
-      ];
-      store.sub = [
-        { id: genId(), content: '技术调研', dt: new Date(now.getTime() - 2.5*24*3600*1000).toISOString(), duration: 90 },
-      ];
-    }
+    // 不再注入示例数据：保持真实持久化结果，首次为空即可
   };
 
   const save = () => {
     localStorage.setItem(LS_KEYS.main, JSON.stringify(store.main));
     localStorage.setItem(LS_KEYS.sub, JSON.stringify(store.sub));
+    // 同步到绑定的数据文件（若已绑定）
+    writeFile();
   };
 
   const renderList = (el, list, lane) => {
@@ -274,6 +362,30 @@
   // 事件绑定
   ui.addNode.addEventListener('click', addNode);
 
+  // 绑定数据文件按钮
+  ui.bindFile && ui.bindFile.addEventListener('click', async () => {
+    try {
+      const pickerOpts = {
+        types: [{ description: 'JSON 文件', accept: { 'application/json': ['.json'] } }],
+        excludeAcceptAllOption: false,
+        multiple: false,
+      };
+      const handles = await window.showOpenFilePicker(pickerOpts);
+      if (!handles || !handles.length) { showToast('未选择文件'); return; }
+      fileHandle = handles[0];
+      await idb.set('dataFile', fileHandle);
+      ui.bindStatus && (ui.bindStatus.textContent = '已绑定');
+      // 绑定后先尝试读入文件数据；若文件为空/不合法，则写入当前内存数据
+      const ok = await readFile();
+      if (!ok) await writeFile();
+      render();
+      showToast('数据文件已绑定');
+    } catch (e) {
+      console.warn('绑定取消或失败', e);
+      showToast('绑定已取消');
+    }
+  });
+
   // 毁链操作（密码 0218）
   const confirmPassword = () => {
     const input = typeof window !== 'undefined' ? window.prompt('请输入密码以确认操作：') : '';
@@ -296,12 +408,22 @@
   ui.destroyMain && ui.destroyMain.addEventListener('click', () => destroyChain('main'));
   ui.destroySub && ui.destroySub.addEventListener('click', () => destroyChain('sub'));
 
-  // 初始化
-  load();
-  // 默认值：时间为当前，花费为 30 分钟
-  setDefaultDateTime();
-  render();
+  // 初始化（尝试恢复文件句柄并读取文件，否则走 localStorage）
+  (async () => {
+    await idb.open();
+    try { fileHandle = await idb.get('dataFile'); } catch (_) { fileHandle = null; }
+    let loadedFromFile = false;
+    if (fileHandle) {
+      ui.bindStatus && (ui.bindStatus.textContent = '已绑定');
+      loadedFromFile = await readFile();
+    }
+    if (!loadedFromFile) load();
+    setDefaultDateTime();
+    render();
+  })();
 
   // 监听窗口尺寸变化，重绘连接线
   window.addEventListener('resize', renderConnections);
+  // 兜底：页面关闭或刷新时保存一次，确保变更持久化
+  window.addEventListener('beforeunload', save);
 })();
