@@ -16,9 +16,6 @@
     destroyMain: document.getElementById('destroy-main'),
     destroySub: document.getElementById('destroy-sub'),
     detailsBox: document.getElementById('details-box'),
-    ghToken: document.getElementById('gh-token'),
-    bindGh: document.getElementById('bind-gh'),
-    ghStatus: document.getElementById('gh-status'),
   };
 
   const store = {
@@ -33,103 +30,29 @@
 
   // 已移除本地文件绑定逻辑
 
-  // GitHub 仓库同步设置（直接写入仓库中的 data.json）
-  const GH_KEYS = {
-    token: 'gh_token',
-    owner: 'gh_owner',
-    repo: 'gh_repo',
-    branch: 'gh_branch',
-    enabled: 'gh_enabled',
-  };
-  const gh = {
-    owner: localStorage.getItem(GH_KEYS.owner) || 'Lancy233',
-    repo: localStorage.getItem(GH_KEYS.repo) || 'CTDP',
-    branch: localStorage.getItem(GH_KEYS.branch) || 'main',
-    token: localStorage.getItem(GH_KEYS.token) || '',
-    enabled: localStorage.getItem(GH_KEYS.enabled) === '1',
-  };
-  if (gh.token && ui.ghToken) ui.ghToken.value = gh.token;
-  if (ui.ghStatus) ui.ghStatus.textContent = gh.enabled ? '已绑定' : '未绑定';
+  // 删除 GitHub 同步逻辑，改为本地后端写入
 
-  async function ghGetFileSha(path) {
-    const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}?ref=${gh.branch}`;
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${gh.token}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-    if (res.status === 200) {
-      const data = await res.json();
-      return data.sha;
-    }
-    if (res.status === 404) return null;
-    throw new Error(`GitHub API error: ${res.status}`);
-  }
-
-  function toBase64Unicode(str) {
-    const utf8 = new TextEncoder().encode(str);
-    let bin = '';
-    utf8.forEach((b) => (bin += String.fromCharCode(b)));
-    return btoa(bin);
-  }
-
-  async function ghPutFile(path, contentStr, sha, message) {
-    const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}`;
-    const body = {
-      message,
-      content: toBase64Unicode(contentStr),
-      branch: gh.branch,
-    };
-    if (sha) body.sha = sha;
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${gh.token}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`GitHub PUT error: ${res.status}`);
-    const out = await res.json();
-    return out.content.sha;
-  }
-
-  async function ghEnsureAndSync() {
-    if (!gh.enabled || !gh.token) return;
+  async function backendSave() {
     try {
-      const path = 'data.json';
-      const contentStr = JSON.stringify({ main: store.main, sub: store.sub }, null, 2);
-      const sha = await ghGetFileSha(path);
-      await ghPutFile(path, contentStr, sha, sha ? 'Update data.json via CTDP' : 'Create data.json via CTDP');
-      ui.ghStatus && (ui.ghStatus.textContent = '已同步');
-    } catch (e) {
-      console.warn(e);
-      ui.ghStatus && (ui.ghStatus.textContent = '同步失败');
-    }
-  }
-
-  async function ghReadFile(path) {
-    if (!gh.enabled || !gh.token) return false;
-    try {
-      const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${encodeURIComponent(path)}?ref=${gh.branch}`;
-      const res = await fetch(url, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${gh.token}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
+      const res = await fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ main: store.main, sub: store.sub })
       });
-      if (res.status !== 200) return false;
-      const data = await res.json();
-      const raw = (data && data.content) ? data.content.replace(/\n/g, '') : '';
-      if (!raw) return false;
-      const bin = atob(raw);
-      const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
-      const text = new TextDecoder().decode(bytes);
-      const obj = JSON.parse(text);
+      if (res.ok) return true;
+      console.warn('后端保存失败', res.status);
+      return false;
+    } catch (e) {
+      console.warn('后端保存异常', e);
+      return false;
+    }
+  }
+
+  async function backendLoad() {
+    try {
+      const res = await fetch('/api/load');
+      if (!res.ok) return false;
+      const obj = await res.json();
       if (obj && Array.isArray(obj.main) && Array.isArray(obj.sub)) {
         store.main = obj.main;
         store.sub = obj.sub;
@@ -137,7 +60,7 @@
       }
       return false;
     } catch (e) {
-      console.warn('读取仓库 data.json 失败', e);
+      console.warn('后端读取异常', e);
       return false;
     }
   }
@@ -183,9 +106,8 @@
   const save = () => {
     localStorage.setItem(LS_KEYS.main, JSON.stringify(store.main));
     localStorage.setItem(LS_KEYS.sub, JSON.stringify(store.sub));
-    // 仅同步到 GitHub 仓库中的 data.json（若已绑定）
-    // 同步到 GitHub 仓库中的 data.json（若已绑定）
-    ghEnsureAndSync();
+    // 同步到本地后端 data.json
+    backendSave();
   };
 
   const renderList = (el, list, lane) => {
@@ -386,21 +308,7 @@
 
   // 已移除本地文件绑定入口
 
-  // 绑定仓库同步按钮
-  ui.bindGh && ui.bindGh.addEventListener('click', async () => {
-    const token = (ui.ghToken && ui.ghToken.value.trim()) || '';
-    if (!token) { alert('请输入 GitHub Token'); return; }
-    gh.token = token;
-    gh.enabled = true;
-    localStorage.setItem(GH_KEYS.token, gh.token);
-    localStorage.setItem(GH_KEYS.owner, gh.owner);
-    localStorage.setItem(GH_KEYS.repo, gh.repo);
-    localStorage.setItem(GH_KEYS.branch, gh.branch);
-    localStorage.setItem(GH_KEYS.enabled, '1');
-    ui.ghStatus && (ui.ghStatus.textContent = '已绑定');
-    await ghEnsureAndSync();
-    alert('仓库同步已开启并已尝试写入 data.json');
-  });
+  // 已移除仓库绑定入口
 
   // 毁链操作（密码 0218）
   const confirmPassword = () => {
@@ -424,14 +332,9 @@
   ui.destroyMain && ui.destroyMain.addEventListener('click', () => destroyChain('main'));
   ui.destroySub && ui.destroySub.addEventListener('click', () => destroyChain('sub'));
 
-  // 初始化（优先从仓库 data.json 恢复，否则走 localStorage）
+  // 初始化（优先从本地后端 data.json 恢复，否则走 localStorage）
   (async () => {
-    let loaded = false;
-    if (gh.enabled && gh.token) {
-      ui.ghStatus && (ui.ghStatus.textContent = '已绑定');
-      loaded = await ghReadFile('data.json');
-      if (loaded) ui.ghStatus && (ui.ghStatus.textContent = '已读取');
-    }
+    const loaded = await backendLoad();
     if (!loaded) load();
     setDefaultDateTime();
     render();
