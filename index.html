@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lancy的神圣时间线 | CTDP</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#7C4DFF" />
+              <stop offset="100%" stop-color="#00C2FF" />
+            </linearGradient>
+          </defs>
+          <path fill="url(#g1)" d="M12 2a4 4 0 0 1 3.999 3.8l.001.2v2.046a4 4 0 0 1-2.001 3.463V14a4 4 0 1 1-4 0v-2.491A4 4 0 0 1 8 8.046V6a4 4 0 0 1 4-4Zm0 2a2 2 0 0 0-2 2v2.046a2 2 0 1 0 4 0V6a2 2 0 0 0-2-2Zm0 8a2 2 0 0 0-2 2v2a2 2 0 1 0 4 0v-2a2 2 0 0 0-2-2Z" />
+        </svg>
+        <h1>Lancy的神圣时间线</h1>
+      </div>
+      <p class="subtitle">CTDP（链式时延协议）</p>
+    </header>
+
+    <main class="container">
+      <section class="timelines">
+        <div class="lane lane-combined">
+          <div class="lane-row" id="lane-main">
+            <div class="lane-header">
+              <h2>主链</h2>
+              <span class="count" id="count-main">0</span>
+            </div>
+            <ul class="timeline" id="timeline-main"></ul>
+          </div>
+
+          <div class="lane-row" id="lane-sub">
+            <div class="lane-header">
+              <h2>副链</h2>
+              <span class="count" id="count-sub">0</span>
+            </div>
+            <ul class="timeline" id="timeline-sub"></ul>
+          </div>
+        </div>
+        <!-- 主链与副链的关联虚线层（SVG 覆盖在两条线之上） -->
+        <svg class="connections" id="connections" preserveAspectRatio="none"></svg>
+      </section>
+
+      <section class="details">
+        <h3>节点详情</h3>
+        <div id="details-box" class="details-box">未选择节点</div>
+      </section>
+
+      <section class="editor">
+        <h3>新增时间节点</h3>
+        <form id="node-form" class="node-form" autocomplete="off">
+          <div class="field">
+            <label for="node-content">节点内容</label>
+            <textarea id="node-content" placeholder="请输入节点内容" rows="2" required></textarea>
+          </div>
+
+          <div class="field">
+            <label for="node-time">节点时间</label>
+            <input id="node-time" type="datetime-local" required />
+          </div>
+
+          <div class="field">
+            <label for="node-duration">节点花费时间（分钟）</label>
+            <input id="node-duration" type="number" min="0" step="1" placeholder="例如：30" />
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn primary" id="add-node">添加节点</button>
+            <label class="opt"><input type="checkbox" id="also-main" /> 同时加入主链</label>
+            <span class="hint">节点时间默认当前，花费默认 30 分钟</span>
+          </div>
+        </form>
+      </section>
+
+      <section class="danger-ops">
+        <button type="button" class="btn danger" id="destroy-main">毁掉主链</button>
+        <button type="button" class="btn danger" id="destroy-sub">毁掉副链</button>
+        <!-- <span class="hint">操作需输入密码 0218 确认</span> -->
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <small>像俄罗斯套娃一般层层嵌套的剧本，循环与不可逃逸区，就是我们生活的真相。</small>
+    </footer>
+
+    <div id="toast" class="toast" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="app.js"></script>
+  </body>
+  </html>
